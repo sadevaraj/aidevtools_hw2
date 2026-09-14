@@ -231,7 +231,6 @@ def _is_valid_set_editing_payload(payload: Any) -> bool:
         and ("displayName" in payload)
         and (payload["taskId"] is None or isinstance(payload["taskId"], str))
         and isinstance(payload["displayName"], str)
-        and 1 <= len(payload["displayName"]) <= 50
     )
 
 
@@ -334,7 +333,7 @@ async def websocket_endpoint(
         await websocket.send_json(
             {
                 "type": "snapshot",
-                "payload": {"board": board_service.get_board_snapshot(session)},
+                "payload": board_service.get_snapshot_payload(session),
             }
         )
 
@@ -358,8 +357,18 @@ async def websocket_endpoint(
             if command_type == "set_editing":
                 if not isinstance(request_id, str) or not _is_valid_set_editing_payload(payload):
                     continue
+                try:
+                    clean_display_name = board_service.clean_display_name(
+                        payload["displayName"]
+                    )
+                except BoardValidationError:
+                    continue
+                if payload["taskId"] is not None:
+                    board_service.record_display_name_suggestion(
+                        session, clean_display_name
+                    )
                 if manager.set_editing(
-                    websocket, payload["taskId"], payload["displayName"]
+                    websocket, payload["taskId"], clean_display_name
                 ):
                     await manager.broadcast(manager.presence_message())
                 continue

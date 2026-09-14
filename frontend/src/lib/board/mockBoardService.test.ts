@@ -139,4 +139,16 @@ describe("MockBoardService — transport", () => {
     s.setEditing(null, "Devaraj");
     expect(editing[t.id]).toBeUndefined();
   });
+
+  it("keeps display name suggestions available in the mock service path", async () => {
+    const s = svc();
+    const p = await s.createProject("Alpha");
+    const t = await s.createTask({ project_id: p.id, title: "Build", assignee: "D" });
+
+    s.setEditing(t.id, "devaraj");
+    s.setEditing(t.id, "Devaraj");
+    s.setEditing(t.id, "Taylor");
+
+    expect(s.getDisplayNameSuggestions()).toEqual(["Taylor", "Devaraj"]);
+  });
 });

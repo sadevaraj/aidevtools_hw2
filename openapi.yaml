@@ -32,6 +32,9 @@ info:
 # - On initial connect and after reconnect, the server sends a full `snapshot`.
 # - The client replaces its entire local board state from the snapshot and does
 #   not merge in unconfirmed local edits.
+# - `snapshot.payload.displayNameSuggestions` is an additive, non-breaking
+#   string array of the 20 most recently used distinct display names, ordered
+#   most-recent-first.
 # - If the socket closes before a pending command receives `command_ok` or
 #   `command_error`, the client reconnects and retries that command at most once
 #   with the same `requestId`.
@@ -99,7 +102,7 @@ x-websocket-protocol:
     retryRule: Single retry reuses the same requestId.
     idempotencyRule: Duplicate requestId values are idempotent and must not apply the mutation twice.
     reconnectRule: Pending commands without a reply are retried once after reconnect, then fail with `Could not save changes` and the client restores its last confirmed board state.
-    snapshotRule: Initial connect and reconnect both send a full snapshot that replaces the client's local board state.
+    snapshotRule: Initial connect and reconnect both send a full snapshot that replaces the client's local board state. `displayNameSuggestions` is additive and non-breaking.
   commandOkByCommand:
     create_project: project
     rename_project: project
@@ -218,6 +221,14 @@ components:
       additionalProperties:
         type: string
       description: Record<string, string> mapping taskId to display name.
+    DisplayNameSuggestions:
+      type: array
+      description: Most-recent-first distinct display-name suggestions returned on snapshot only, capped at 20 entries.
+      maxItems: 20
+      items:
+        type: string
+        minLength: 1
+        maxLength: 50
     RequestId:
       type: string
       description: Client-generated identifier unique per logical mutation.
@@ -544,9 +555,12 @@ components:
       additionalProperties: false
       required:
         - board
+        - displayNameSuggestions
       properties:
         board:
           $ref: '#/components/schemas/Board'
+        displayNameSuggestions:
+          $ref: '#/components/schemas/DisplayNameSuggestions'
     ServerSnapshot:
       type: object
       additionalProperties: false

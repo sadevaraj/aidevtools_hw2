@@ -9,6 +9,9 @@ import type {
 
 export function useBoard(service: BoardService = getBoardService()) {
   const [board, setBoard] = useState<BoardState>(() => service.getState());
+  const [displayNameSuggestions, setDisplayNameSuggestions] = useState<string[]>(() =>
+    service.getDisplayNameSuggestions(),
+  );
   const [status, setStatus] = useState<ConnectionStatus>(() =>
     service.getStatus(),
   );
@@ -18,7 +21,10 @@ export function useBoard(service: BoardService = getBoardService()) {
 
   useEffect(() => {
     return service.subscribe((event) => {
-      if (event.type === "state") setBoard(event.board);
+      if (event.type === "state") {
+        setBoard(event.board);
+        setDisplayNameSuggestions(service.getDisplayNameSuggestions());
+      }
       else if (event.type === "status") setStatus(event.status);
       else setEditing(event.editing);
     });
@@ -53,6 +59,7 @@ export function useBoard(service: BoardService = getBoardService()) {
   return {
     service,
     board,
+    displayNameSuggestions,
     status,
     editing,
     pending,

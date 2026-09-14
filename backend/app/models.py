@@ -63,3 +63,13 @@ class Task(Base):
     )
 
     project: Mapped[Project] = relationship(back_populates="tasks")
+
+
+class DisplayNameSuggestion(Base):
+    __tablename__ = "display_name_suggestions"
+
+    normalized_name: Mapped[str] = mapped_column(String(50), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )

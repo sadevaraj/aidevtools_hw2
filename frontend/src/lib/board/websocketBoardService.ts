@@ -45,7 +45,10 @@ type CommandFrame = {
 };
 
 type ServerFrame =
-  | { type: "snapshot"; payload: { board: BoardState } }
+  | {
+      type: "snapshot";
+      payload: { board: BoardState; displayNameSuggestions?: string[] };
+    }
   | { type: "board_event"; payload: Record<string, unknown> }
   | { type: "presence"; payload: { editing: Record<string, string> } }
   | { type: "command_ok"; requestId: string; payload: Record<string, unknown> }
@@ -150,6 +153,14 @@ function isSocketOpen(socket: WebSocketState | null): socket is WebSocketState {
   return socket?.readyState === WS_OPEN;
 }
 
+function asDisplayNameSuggestions(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    return null;
+  }
+  return [...value];
+}
+
 export interface WebSocketBoardServiceOptions {
   reconnectDelayMs?: number;
   webSocketFactory?: WebSocketFactory;
@@ -173,6 +184,7 @@ export class WebSocketBoardService implements BoardService {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private offlineTimer: ReturnType<typeof setTimeout> | null = null;
   private state: BoardState = emptyState();
+  private displayNameSuggestions: string[] = [];
   private editing: Record<string, string> = {};
   private status: ConnectionStatus = "reconnecting";
 
@@ -203,6 +215,10 @@ export class WebSocketBoardService implements BoardService {
 
   getStatus(): ConnectionStatus {
     return this.status;
+  }
+
+  getDisplayNameSuggestions(): string[] {
+    return [...this.displayNameSuggestions];
   }
 
   createProject(name: string): Promise<Project> {
@@ -336,8 +352,12 @@ export class WebSocketBoardService implements BoardService {
     switch (message.type) {
       case "snapshot": {
         const board = asBoardState(message.payload?.board);
-        if (!board) return;
+        const displayNameSuggestions = asDisplayNameSuggestions(
+          message.payload?.displayNameSuggestions,
+        );
+        if (!board || displayNameSuggestions === null) return;
         this.state = board;
+        this.displayNameSuggestions = displayNameSuggestions;
         this.emit({ type: "state", board: this.getState() });
         return;
       }

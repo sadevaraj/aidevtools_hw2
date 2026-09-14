@@ -13,14 +13,17 @@ from app.board_service import (
     delete_project,
     delete_task,
     get_board_snapshot,
+    get_display_name_suggestions,
+    get_snapshot_payload,
     move_task,
+    record_display_name_suggestion,
     rename_project,
     reorder_projects,
     set_project_hidden,
     undo_delete_project,
     update_task,
 )
-from app.models import Project, Task, TaskStatus
+from app.models import DisplayNameSuggestion, Project, Task, TaskStatus
 
 
 def add_project(
@@ -143,6 +146,106 @@ def test_get_board_snapshot_returns_openapi_shape(session):
             "created_at": "2024-01-04T00:00:00Z",
         },
     ]
+
+
+def test_get_snapshot_payload_includes_most_recent_display_name_suggestions(session):
+    add_project(session, "project-1")
+    add_task(session, "task-1", project_id="project-1")
+
+    record_display_name_suggestion(session, "Taylor")
+    record_display_name_suggestion(session, "Jordan")
+
+    snapshot = get_snapshot_payload(session)
+
+    assert snapshot == {
+        "board": {
+            "projects": [
+                {
+                    "id": "project-1",
+                    "name": "Project",
+                    "position": 0,
+                    "hidden": False,
+                    "created_at": snapshot["board"]["projects"][0]["created_at"],
+                }
+            ],
+            "tasks": [
+                {
+                    "id": "task-1",
+                    "project_id": "project-1",
+                    "title": "Task",
+                    "assignee": "Casey",
+                    "notes": "",
+                    "status": "todo",
+                    "position": 0,
+                    "created_at": snapshot["board"]["tasks"][0]["created_at"],
+                }
+            ],
+        },
+        "displayNameSuggestions": ["Jordan", "Taylor"],
+    }
+    assert snapshot["board"]["projects"][0]["created_at"].endswith("Z")
+    assert snapshot["board"]["tasks"][0]["created_at"].endswith("Z")
+
+
+def test_record_display_name_suggestion_trims_dedupes_and_keeps_latest_casing(
+    session, monkeypatch
+):
+    base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+    import app.board_service as board_service
+
+    monkeypatch.setattr(board_service, "_utc_now", lambda: base_time)
+    record_display_name_suggestion(session, "  devaraj  ")
+    monkeypatch.setattr(board_service, "_utc_now", lambda: base_time + timedelta(minutes=5))
+    record_display_name_suggestion(session, "Devaraj")
+    monkeypatch.setattr(board_service, "_utc_now", lambda: base_time + timedelta(minutes=10))
+    record_display_name_suggestion(session, "Avery")
+
+    persisted = session.get(DisplayNameSuggestion, "devaraj")
+    assert persisted is not None
+    assert persisted.display_name == "Devaraj"
+    assert persisted.last_used_at.replace(tzinfo=timezone.utc) == base_time + timedelta(minutes=5)
+    assert get_display_name_suggestions(session) == ["Avery", "Devaraj"]
+    assert list(
+        session.scalars(
+            select(DisplayNameSuggestion.normalized_name).order_by(
+                DisplayNameSuggestion.normalized_name.asc()
+            )
+        )
+    ) == [
+        "avery",
+        "devaraj",
+    ]
+
+
+def test_record_display_name_suggestion_prunes_to_twenty_most_recent_distinct_names(
+    session, monkeypatch
+):
+    base_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+    import app.board_service as board_service
+
+    for index in range(21):
+        monkeypatch.setattr(
+            board_service, "_utc_now", lambda index=index: base_time + timedelta(minutes=index)
+        )
+        record_display_name_suggestion(session, f"User {index:02d}")
+
+    suggestions = get_display_name_suggestions(session)
+
+    assert len(suggestions) == 20
+    assert suggestions[0] == "User 20"
+    assert suggestions[-1] == "User 01"
+    assert session.get(DisplayNameSuggestion, "user 00") is None
+
+
+@pytest.mark.parametrize("value", [" ", "\n\t", "x" * 51])
+def test_record_display_name_suggestion_reuses_existing_validation(session, value):
+    with pytest.raises(BoardValidationError):
+        record_display_name_suggestion(session, value)
+
+    assert get_display_name_suggestions(session) == []
+    assert list(session.scalars(select(DisplayNameSuggestion))) == []
 
 
 def test_create_project_trims_sets_defaults_and_appends_position(session):

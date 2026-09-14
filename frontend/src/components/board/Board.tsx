@@ -24,6 +24,7 @@ export function Board() {
   const {
     service,
     board,
+    displayNameSuggestions,
     status,
     editing,
     isPending,
@@ -233,6 +234,7 @@ export function Board() {
       <NameModal
         open={needsName || nameOpen}
         initial={name ?? ""}
+        suggestions={displayNameSuggestions}
         dismissible={!needsName}
         onClose={() => setNameOpen(false)}
         onSave={(value) => {
@@ -268,17 +270,20 @@ export function Board() {
 function NameModal({
   open,
   initial,
+  suggestions,
   dismissible,
   onClose,
   onSave,
 }: {
   open: boolean;
   initial: string;
+  suggestions: string[];
   dismissible: boolean;
   onClose: () => void;
   onSave: (value: string) => void;
 }) {
   const [value, setValue] = useState(initial);
+  const suggestionListId = "display-name-suggestions";
   return (
     <Modal
       open={open}
@@ -298,11 +303,19 @@ function NameModal({
           id="display-name"
           autoFocus
           maxLength={50}
+          list={suggestions.length > 0 ? suggestionListId : undefined}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="Devaraj"
           className={fieldClass}
         />
+        {suggestions.length > 0 && (
+          <datalist id={suggestionListId}>
+            {suggestions.map((suggestion) => (
+              <option key={suggestion} value={suggestion} />
+            ))}
+          </datalist>
+        )}
         <button type="submit" disabled={!value.trim()} className={`mt-4 w-full ${primaryButtonClass}`}>
           Continue
         </button>

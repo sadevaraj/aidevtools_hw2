@@ -23,7 +23,10 @@ const task = (overrides: Partial<Task> = {}): Task => ({
   ...overrides,
 });
 
-const snapshot = (board: Partial<BoardState> = {}) => ({
+const snapshot = (
+  board: Partial<BoardState> = {},
+  displayNameSuggestions: string[] = [],
+) => ({
   type: "snapshot" as const,
   payload: {
     board: {
@@ -31,6 +34,7 @@ const snapshot = (board: Partial<BoardState> = {}) => ({
       tasks: [],
       ...board,
     },
+    displayNameSuggestions,
   },
 });
 
@@ -137,6 +141,22 @@ describe("WebSocketBoardService", () => {
     });
     expect(service.getState()).toEqual({ projects: [project()], tasks: [task()] });
     expect(service.getStatus()).toBe("connected");
+    expect(service.getDisplayNameSuggestions()).toEqual([]);
+  });
+
+  it("hydrates display name suggestions from snapshot payloads", () => {
+    const service = new WebSocketBoardService("ws://example.test/ws", {
+      webSocketFactory: factory,
+    });
+
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    socket.emit(snapshot({}, ["Taylor", "Jordan"]));
+
+    expect(service.getDisplayNameSuggestions()).toEqual(["Taylor", "Jordan"]);
+
+    socket.emit(snapshot({}, ["Casey"]));
+    expect(service.getDisplayNameSuggestions()).toEqual(["Casey"]);
   });
 
   it("sends every command envelope with its own requestId", async () => {
