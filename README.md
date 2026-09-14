@@ -794,9 +794,38 @@ Continue developing this project in the [Lovable editor](https://lovable.dev/pro
 - **Stay in sync**: every change made in Lovable is committed straight to this repository.
 - **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
 
+## Project Structure
+
+```text
+/backend     # backend application and its tests
+/docs        # supporting documentation
+/frontend    # frontend application
+AGENTS.md    # instructions for coding agents
+openapi.yaml # API agreement
+```
+
 ## Development
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+### Running the Frontend with Docker
+
+To build and run the frontend using Docker:
+
+```sh
+docker build -t simple-board-frontend ./frontend
+docker run -p 5173:5173 simple-board-frontend
+```
+
+Alternatively, using Docker Compose:
+
+```sh
+docker compose up --build
+```
+
+Access the application at `http://localhost:5173`.
+
+### Running Locally (Without Docker)
+
+You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
 
 ```sh
 git clone <this-repository-url>

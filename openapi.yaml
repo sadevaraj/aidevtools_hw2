@@ -1,0 +1,128 @@
+openapi: 3.0.3
+info:
+  title: Simple Board API
+  description: API specification for Simple Board real-time Kanban application
+  version: 1.0.0
+paths:
+  /api/projects:
+    get:
+      summary: List all projects
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Project'
+    post:
+      summary: Create a new project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+  /api/tasks:
+    get:
+      summary: List all tasks
+      responses:
+        '200':
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+    post:
+      summary: Create a new task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+  /ws:
+    get:
+      summary: WebSocket endpoint for real-time collaboration
+      responses:
+        '101':
+          description: Switching Protocols to WebSocket
+components:
+  schemas:
+    Project:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    CreateProjectRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+    Task:
+      type: object
+      required:
+        - id
+        - title
+        - status
+        - projectId
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [todo, doing, done]
+        projectId:
+          type: string
+        assignee:
+          type: string
+        order:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    CreateTaskRequest:
+      type: object
+      required:
+        - title
+        - projectId
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        projectId:
+          type: string
+        assignee:
+          type: string
