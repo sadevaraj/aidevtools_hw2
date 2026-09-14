@@ -251,6 +251,7 @@ export function Board() {
       />
 
       <NewTaskModal
+        key={displayName}
         open={taskOpen}
         projects={board.projects.map((p) => ({ id: p.id, name: p.name }))}
         defaultAssignee={displayName}
