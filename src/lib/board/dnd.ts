@@ -20,22 +20,22 @@ export function resolveTaskDrop(
     .filter((t) => t.project_id === target.projectId && t.status === target.status)
     .sort((a, b) => a.position - b.position);
 
-  let index = column.length;
-  if (target.type === "task" && target.taskId) {
-    const overIndex = column.findIndex((t) => t.id === target.taskId);
-    if (overIndex >= 0) index = overIndex;
-  }
-
   const sameColumn =
     activeTask.project_id === target.projectId && activeTask.status === target.status;
+  const from = column.findIndex((t) => t.id === activeTask.id);
+  const rest = column.filter((t) => t.id !== activeTask.id);
 
-  if (sameColumn) {
-    const from = column.findIndex((t) => t.id === activeTask.id);
-    if (from === -1) return null;
-    if (from === index) return null;
-    if (from < index) index -= 1;
-    if (from === index) return null;
+  let index = rest.length;
+  if (target.type === "task" && target.taskId) {
+    if (target.taskId === activeTask.id) return null;
+    const overIndex = rest.findIndex((t) => t.id === target.taskId);
+    if (overIndex >= 0) {
+      const movingDown = sameColumn && from >= 0 && from < column.findIndex((t) => t.id === target.taskId);
+      index = movingDown ? overIndex + 1 : overIndex;
+    }
   }
+
+  if (sameColumn && from === index) return null;
 
   return {
     taskId: activeTask.id,
