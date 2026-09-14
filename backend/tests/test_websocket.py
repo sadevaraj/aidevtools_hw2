@@ -301,3 +301,252 @@ def test_duplicate_request_id_reuses_cached_result_without_rebroadcast(client):
     with Session() as session:
         projects = list(session.scalars(select(Project).order_by(Project.name.asc())))
         assert [project.name for project in projects] == ["Follow Up", "Idempotent"]
+
+
+def test_duplicate_request_id_across_reconnect_reuses_cached_command_ok(client):
+    test_client, Session = client
+
+    with test_client.websocket_connect("/ws") as observer:
+        observer.receive_json()
+        with test_client.websocket_connect("/ws") as requester:
+            requester.receive_json()
+
+            command = {
+                "type": "create_project",
+                "requestId": "req-reconnect",
+                "payload": {"name": "Reconnect Safe"},
+            }
+            requester.send_json(command)
+
+            first_response = requester.receive_json()
+            requester.receive_json()
+            observer.receive_json()
+
+        with test_client.websocket_connect("/ws") as retried_requester:
+            retried_requester.receive_json()
+            retried_requester.send_json(command)
+            second_response = retried_requester.receive_json()
+
+            observer.send_json(
+                {
+                    "type": "create_project",
+                    "requestId": "req-follow-up-reconnect",
+                    "payload": {"name": "Follow Up"},
+                }
+            )
+            follow_up_command_ok = observer.receive_json()
+
+    assert second_response == first_response
+    assert follow_up_command_ok["type"] == "command_ok"
+    assert follow_up_command_ok["requestId"] == "req-follow-up-reconnect"
+
+    with Session() as session:
+        projects = list(session.scalars(select(Project).order_by(Project.name.asc())))
+        assert [project.name for project in projects] == ["Follow Up", "Reconnect Safe"]
+
+
+def test_duplicate_request_id_across_reconnect_reuses_cached_command_error(client):
+    test_client, Session = client
+
+    command = {
+        "type": "create_project",
+        "requestId": "req-reconnect-error",
+        "payload": {"name": "   "},
+    }
+
+    with test_client.websocket_connect("/ws") as requester:
+        requester.receive_json()
+        requester.send_json(command)
+        first_response = requester.receive_json()
+
+    with test_client.websocket_connect("/ws") as retried_requester:
+        retried_requester.receive_json()
+        retried_requester.send_json(command)
+        second_response = retried_requester.receive_json()
+
+    assert second_response == first_response == {
+        "type": "command_error",
+        "requestId": "req-reconnect-error",
+        "payload": {
+            "code": "invalid_project_name",
+            "message": "Invalid project name",
+        },
+    }
+
+    with Session() as session:
+        projects = list(session.scalars(select(Project)))
+        assert projects == []
+
+
+def test_reusing_request_id_with_different_payload_returns_conflict_and_keeps_original_cache(
+    client,
+):
+    test_client, Session = client
+
+    original_command = {
+        "type": "create_project",
+        "requestId": "req-conflict-payload",
+        "payload": {"name": "Original"},
+    }
+
+    with test_client.websocket_connect("/ws") as observer:
+        observer.receive_json()
+        with test_client.websocket_connect("/ws") as requester:
+            requester.receive_json()
+            requester.send_json(original_command)
+            first_response = requester.receive_json()
+            requester.receive_json()
+            observer.receive_json()
+
+        with test_client.websocket_connect("/ws") as retried_requester:
+            retried_requester.receive_json()
+            retried_requester.send_json(
+                {
+                    "type": "create_project",
+                    "requestId": "req-conflict-payload",
+                    "payload": {"name": "Different"},
+                }
+            )
+            assert retried_requester.receive_json() == {
+                "type": "command_error",
+                "requestId": "req-conflict-payload",
+                "payload": {
+                    "code": "request_id_conflict",
+                    "message": "requestId was already used for a different logical command",
+                },
+            }
+
+        with test_client.websocket_connect("/ws") as original_retry:
+            original_retry.receive_json()
+            original_retry.send_json(original_command)
+            assert original_retry.receive_json() == first_response
+
+            observer.send_json(
+                {
+                    "type": "create_project",
+                    "requestId": "req-after-conflict",
+                    "payload": {"name": "Follow Up"},
+                }
+            )
+            follow_up_command_ok = observer.receive_json()
+
+    assert follow_up_command_ok["type"] == "command_ok"
+    assert follow_up_command_ok["requestId"] == "req-after-conflict"
+
+    with Session() as session:
+        projects = list(session.scalars(select(Project).order_by(Project.name.asc())))
+        assert [project.name for project in projects] == ["Follow Up", "Original"]
+
+
+def test_reusing_request_id_with_different_command_type_returns_conflict(client):
+    test_client, Session = client
+
+    with test_client.websocket_connect("/ws") as requester:
+        requester.receive_json()
+        requester.send_json(
+            {
+                "type": "create_project",
+                "requestId": "req-conflict-command",
+                "payload": {"name": "Roadmap"},
+            }
+        )
+        create_response = requester.receive_json()
+        requester.receive_json()
+        project_id = create_response["payload"]["project"]["id"]
+
+    with test_client.websocket_connect("/ws") as retried_requester:
+        retried_requester.receive_json()
+        retried_requester.send_json(
+            {
+                "type": "delete_project",
+                "requestId": "req-conflict-command",
+                "payload": {"id": project_id},
+            }
+        )
+        assert retried_requester.receive_json() == {
+            "type": "command_error",
+            "requestId": "req-conflict-command",
+            "payload": {
+                "code": "request_id_conflict",
+                "message": "requestId was already used for a different logical command",
+            },
+        }
+
+    with Session() as session:
+        projects = list(session.scalars(select(Project)))
+        assert [project.id for project in projects] == [project_id]
+
+
+def test_request_id_cache_expires_after_retry_window(client, monkeypatch):
+    test_client, Session = client
+
+    fake_now = 1_000.0
+    monkeypatch.setattr(manager, "_now", lambda: fake_now)
+
+    command = {
+        "type": "create_project",
+        "requestId": "req-expired",
+        "payload": {"name": "Expires"},
+    }
+
+    with test_client.websocket_connect("/ws") as requester:
+        requester.receive_json()
+        requester.send_json(command)
+        requester.receive_json()
+        requester.receive_json()
+
+        fake_now += manager.retry_window_seconds + 1
+
+        requester.send_json(command)
+        requester.receive_json()
+        requester.receive_json()
+
+    with Session() as session:
+        projects = list(session.scalars(select(Project).order_by(Project.created_at.asc())))
+        assert [project.name for project in projects] == ["Expires", "Expires"]
+
+
+def test_request_id_cache_evicts_oldest_entry_when_capacity_is_exceeded(client, monkeypatch):
+    test_client, Session = client
+
+    fake_now = 2_000.0
+    monkeypatch.setattr(manager, "_now", lambda: fake_now)
+    monkeypatch.setattr(manager, "cache_size", 2)
+
+    with test_client.websocket_connect("/ws") as requester:
+        requester.receive_json()
+
+        for request_id, name in (
+            ("req-oldest", "Oldest"),
+            ("req-middle", "Middle"),
+            ("req-newest", "Newest"),
+        ):
+            requester.send_json(
+                {
+                    "type": "create_project",
+                    "requestId": request_id,
+                    "payload": {"name": name},
+                }
+            )
+            requester.receive_json()
+            requester.receive_json()
+            fake_now += 1
+
+        requester.send_json(
+            {
+                "type": "create_project",
+                "requestId": "req-oldest",
+                "payload": {"name": "Oldest"},
+            }
+        )
+        requester.receive_json()
+        requester.receive_json()
+
+    with Session() as session:
+        projects = list(session.scalars(select(Project).order_by(Project.created_at.asc())))
+        assert [project.name for project in projects] == [
+            "Oldest",
+            "Middle",
+            "Newest",
+            "Oldest",
+        ]

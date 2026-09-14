@@ -25,6 +25,8 @@ info:
 #   `requestId` exactly once.
 # - The server treats duplicate `requestId` values for the same logical command
 #   as idempotent and must not apply the mutation twice.
+# - Reusing a `requestId` for a different logical command is a protocol error
+#   and returns `command_error` with code `request_id_conflict`.
 #
 # Reconnect and state replacement
 # - On initial connect and after reconnect, the server sends a full `snapshot`.
@@ -125,8 +127,10 @@ x-websocket-protocol:
       - invalid_task_id
       - invalid_status
       - nothing_to_undo
+      - request_id_conflict
     requiredMessage:
       nothing_to_undo: Nothing to undo
+      request_id_conflict: requestId was already used for a different logical command
 components:
   schemas:
     Status:
@@ -804,9 +808,10 @@ components:
             - invalid_task_id
             - invalid_status
             - nothing_to_undo
+            - request_id_conflict
         message:
           type: string
-          description: Human-readable error message. Expired or missing undo uses `Nothing to undo`.
+          description: Human-readable error message. Expired or missing undo uses `Nothing to undo`. Reusing a `requestId` for a different logical command uses `requestId was already used for a different logical command`.
     CommandError:
       type: object
       additionalProperties: false

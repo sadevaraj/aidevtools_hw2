@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import OrderedDict
 from collections.abc import Generator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
@@ -15,22 +16,38 @@ from .models import Project, Task
 
 router = APIRouter()
 
-REQUEST_CACHE_SIZE = 50
+REQUEST_CACHE_SIZE = 500
+REQUEST_CACHE_TTL_SECONDS = 5 * 60
 
 
 @dataclass
 class ConnectionState:
-    request_cache: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
     editing_tasks: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class CachedRequestRecord:
+    command_type: str
+    payload_key: str
+    response: dict[str, Any]
+    created_at: float
+
+
 class ConnectionManager:
-    def __init__(self, cache_size: int = REQUEST_CACHE_SIZE):
+    def __init__(
+        self,
+        cache_size: int = REQUEST_CACHE_SIZE,
+        retry_window_seconds: int = REQUEST_CACHE_TTL_SECONDS,
+        now_fn: Callable[[], float] | None = None,
+    ):
         self.cache_size = cache_size
+        self.retry_window_seconds = retry_window_seconds
+        self._now = now_fn or time.monotonic
         self.active_connections: set[WebSocket] = set()
         self._states: dict[WebSocket, ConnectionState] = {}
         self._task_owners: dict[str, WebSocket] = {}
         self._editing: dict[str, str] = {}
+        self._request_records: OrderedDict[str, CachedRequestRecord] = OrderedDict()
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -55,27 +72,45 @@ class ConnectionManager:
                 changed = True
         return changed
 
+    def _expire_request_records(self) -> None:
+        expires_before = self._now() - self.retry_window_seconds
+        while self._request_records:
+            oldest_request_id, oldest_record = next(iter(self._request_records.items()))
+            if oldest_record.created_at > expires_before:
+                break
+            self._request_records.pop(oldest_request_id, None)
+
     def get_cached_result(
-        self, websocket: WebSocket, request_id: str
+        self, request_id: str, command_type: str, payload: dict[str, Any]
     ) -> dict[str, Any] | None:
-        state = self._states.get(websocket)
-        if state is None:
+        self._expire_request_records()
+        cached_record = self._request_records.get(request_id)
+        if cached_record is None:
             return None
 
-        result = state.request_cache.get(request_id)
-        if result is not None:
-            state.request_cache.move_to_end(request_id)
-        return result
+        if (
+            cached_record.command_type != command_type
+            or cached_record.payload_key != _payload_cache_key(payload)
+        ):
+            return _request_id_conflict(request_id)
+        return cached_record.response
 
-    def cache_result(self, websocket: WebSocket, request_id: str, message: dict[str, Any]) -> None:
-        state = self._states.get(websocket)
-        if state is None:
-            return
-
-        state.request_cache[request_id] = message
-        state.request_cache.move_to_end(request_id)
-        while len(state.request_cache) > self.cache_size:
-            state.request_cache.popitem(last=False)
+    def cache_result(
+        self,
+        request_id: str,
+        command_type: str,
+        payload: dict[str, Any],
+        message: dict[str, Any],
+    ) -> None:
+        self._expire_request_records()
+        self._request_records[request_id] = CachedRequestRecord(
+            command_type=command_type,
+            payload_key=_payload_cache_key(payload),
+            response=message,
+            created_at=self._now(),
+        )
+        while len(self._request_records) > self.cache_size:
+            self._request_records.popitem(last=False)
 
     def set_editing(self, websocket: WebSocket, task_id: str | None, display_name: str) -> bool:
         state = self._states.get(websocket)
@@ -133,6 +168,7 @@ class ConnectionManager:
         self._states.clear()
         self._task_owners.clear()
         self._editing.clear()
+        self._request_records.clear()
 
 
 manager = ConnectionManager()
@@ -172,6 +208,20 @@ def _command_error(request_id: str, error: BoardValidationError) -> dict[str, An
         "requestId": request_id,
         "payload": {"code": error.code, "message": error.message},
     }
+
+
+def _payload_cache_key(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _request_id_conflict(request_id: str) -> dict[str, Any]:
+    return _command_error(
+        request_id,
+        BoardValidationError(
+            "request_id_conflict",
+            "requestId was already used for a different logical command",
+        ),
+    )
 
 
 def _is_valid_set_editing_payload(payload: Any) -> bool:
@@ -317,7 +367,7 @@ async def websocket_endpoint(
             if not isinstance(request_id, str):
                 continue
 
-            cached_result = manager.get_cached_result(websocket, request_id)
+            cached_result = manager.get_cached_result(request_id, command_type, payload)
             if cached_result is not None:
                 await websocket.send_json(cached_result)
                 continue
@@ -328,13 +378,13 @@ async def websocket_endpoint(
                 )
             except BoardValidationError as error:
                 response = _command_error(request_id, error)
-                manager.cache_result(websocket, request_id, response)
+                manager.cache_result(request_id, command_type, payload, response)
                 await websocket.send_json(response)
                 continue
             except ValueError:
                 continue
 
-            manager.cache_result(websocket, request_id, response)
+            manager.cache_result(request_id, command_type, payload, response)
             await websocket.send_json(response)
             await manager.broadcast(board_event)
     except WebSocketDisconnect:
