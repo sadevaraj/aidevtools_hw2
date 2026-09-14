@@ -153,16 +153,25 @@ function isSocketOpen(socket: WebSocketState | null): socket is WebSocketState {
 export interface WebSocketBoardServiceOptions {
   reconnectDelayMs?: number;
   webSocketFactory?: WebSocketFactory;
+  /**
+   * How long the connection may stay in "reconnecting" before the UI is
+   * considered offline and locked down (status escalates to "disconnected").
+   * Defaults to 4x the reconnect delay so a couple of retry attempts get a
+   * chance to succeed before the UI disables editing/creation/dragging.
+   */
+  offlineThresholdMs?: number;
 }
 
 export class WebSocketBoardService implements BoardService {
   private readonly listeners = new Set<(event: BoardEvent) => void>();
   private readonly pending = new Map<string, PendingRequest<unknown>>();
   private readonly reconnectDelayMs: number;
+  private readonly offlineThresholdMs: number;
   private readonly webSocketFactory: WebSocketFactory;
 
   private socket: WebSocketState | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private offlineTimer: ReturnType<typeof setTimeout> | null = null;
   private state: BoardState = emptyState();
   private editing: Record<string, string> = {};
   private status: ConnectionStatus = "reconnecting";
@@ -172,6 +181,7 @@ export class WebSocketBoardService implements BoardService {
     options: WebSocketBoardServiceOptions = {},
   ) {
     this.reconnectDelayMs = options.reconnectDelayMs ?? 1000;
+    this.offlineThresholdMs = options.offlineThresholdMs ?? this.reconnectDelayMs * 4;
     this.webSocketFactory =
       options.webSocketFactory ?? ((socketUrl) => new WebSocket(socketUrl));
     this.connect();
@@ -292,6 +302,7 @@ export class WebSocketBoardService implements BoardService {
       socket.onopen = () => {
         if (this.socket !== socket) return;
         this.clearReconnectTimer();
+        this.clearOfflineTimer();
         this.setStatus("connected");
       };
       socket.onmessage = (event) => {
@@ -536,7 +547,22 @@ export class WebSocketBoardService implements BoardService {
     }
 
     this.setStatus("reconnecting");
+    this.scheduleOfflineTimer();
     this.scheduleReconnect();
+  }
+
+  private scheduleOfflineTimer() {
+    if (this.offlineTimer) return;
+    this.offlineTimer = setTimeout(() => {
+      this.offlineTimer = null;
+      if (this.status !== "connected") this.setStatus("disconnected");
+    }, this.offlineThresholdMs);
+  }
+
+  private clearOfflineTimer() {
+    if (!this.offlineTimer) return;
+    clearTimeout(this.offlineTimer);
+    this.offlineTimer = null;
   }
 
   private scheduleReconnect() {

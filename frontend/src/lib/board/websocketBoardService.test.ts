@@ -490,4 +490,36 @@ describe("WebSocketBoardService", () => {
       tasks: [],
     });
   });
+
+  it("escalates status to disconnected once offline past the threshold, then recovers on reconnect", async () => {
+    vi.useFakeTimers();
+
+    const service = new WebSocketBoardService("ws://example.test/ws", {
+      reconnectDelayMs: 25,
+      offlineThresholdMs: 100,
+      webSocketFactory: factory,
+    });
+    const initialSocket = FakeWebSocket.instances.at(-1)!;
+    initialSocket.open();
+    initialSocket.emit(snapshot());
+
+    const statuses: string[] = [];
+    service.subscribe((event) => {
+      if (event.type === "status") statuses.push(event.status);
+    });
+
+    initialSocket.closeFromServer();
+    expect(service.getStatus()).toBe("reconnecting");
+
+    // Reconnect attempts keep failing (the replacement sockets never open),
+    // so after the offline threshold elapses the UI should lock down.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(service.getStatus()).toBe("disconnected");
+    expect(statuses).toContain("disconnected");
+
+    const reconnectedSocket = FakeWebSocket.instances.at(-1)!;
+    reconnectedSocket.open();
+    expect(service.getStatus()).toBe("connected");
+    expect(statuses.at(-1)).toBe("connected");
+  });
 });
