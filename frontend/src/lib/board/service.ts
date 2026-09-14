@@ -1,4 +1,5 @@
 import { MockBoardService } from "./mockBoardService";
+import { WebSocketBoardService } from "./websocketBoardService";
 import type { BoardService } from "./types";
 
 let instance: BoardService | null = null;
@@ -9,7 +10,11 @@ let instance: BoardService | null = null;
  */
 export function getBoardService(): BoardService {
   if (!instance) {
-    instance = new MockBoardService({ persist: true, latency: 140 });
+    const boardWsUrl = import.meta.env.VITE_BOARD_WS_URL;
+    instance =
+      typeof boardWsUrl === "string" && boardWsUrl.trim() !== ""
+        ? new WebSocketBoardService(boardWsUrl)
+        : new MockBoardService({ persist: true, latency: 140 });
   }
   return instance;
 }

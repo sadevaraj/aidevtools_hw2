@@ -806,22 +806,44 @@ openapi.yaml # API agreement
 
 ## Development
 
-### Running the Frontend with Docker
+### Running with Docker
 
-To build and run the frontend using Docker:
-
-```sh
-docker build -t simple-board-frontend ./frontend
-docker run -p 5173:5173 simple-board-frontend
-```
-
-Alternatively, using Docker Compose:
+Start both the frontend and backend together with Docker Compose:
 
 ```sh
 docker compose up --build
 ```
 
-Access the application at `http://localhost:5173`.
+This publishes the frontend at `http://localhost:5173` and the backend at
+`http://localhost:8000`. The compose file sets
+`VITE_BOARD_WS_URL=ws://localhost:8000/ws` so the browser can reach the backend
+WebSocket through the Docker-published host port. If you override that variable,
+keep it host-reachable (for example `ws://localhost:8000/ws`), not a
+Docker-internal hostname such as `ws://backend:8000/ws`.
+
+Stop the stack with:
+
+```sh
+docker compose down
+```
+
+Backend SQLite data is persisted in the `backend-data` Docker volume, so it
+survives a normal `docker compose down` followed by `docker compose up`.
+
+To intentionally clear the persisted backend data, remove the volume:
+
+```sh
+docker compose down -v
+```
+
+The frontend selects its board service using the client-exposed Vite
+environment variable `VITE_BOARD_WS_URL`.
+
+- Vite requires the `VITE_` prefix for frontend environment variables.
+- Set `VITE_BOARD_WS_URL` to a full browser-reachable WebSocket URL, for
+  example `ws://localhost:8000/ws`, to use the real WebSocket-backed service.
+- Leave `VITE_BOARD_WS_URL` unset or blank to keep using the built-in mock
+  board service for frontend-only development.
 
 ### Running Locally (Without Docker)
 
@@ -833,4 +855,10 @@ cd <repository-name>
 cd frontend
 npm i
 npm run dev
+```
+
+To connect the local frontend to the real backend, start it with:
+
+```sh
+VITE_BOARD_WS_URL=ws://localhost:8000/ws npm run dev
 ```
