@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.board_service import _DELETED_PROJECT_TRASH
 from app.database import create_database_engine, create_session_factory, init_database
 from app.main import app
-from app.models import Project, Task, TaskStatus
+from app.models import DisplayNameSuggestion, Project, Task, TaskStatus
 from app.websocket import manager
 
 
@@ -93,7 +93,7 @@ def test_websocket_connect_sends_initial_snapshot(client):
 
     assert message == {
         "type": "snapshot",
-        "payload": {"board": {"projects": [], "tasks": []}},
+        "payload": {"board": {"projects": [], "tasks": []}, "displayNameSuggestions": []},
     }
 
 
@@ -199,7 +199,7 @@ def test_set_editing_broadcasts_presence_and_disconnect_clears_it(client):
                 {
                     "type": "set_editing",
                     "requestId": "req-editing",
-                    "payload": {"taskId": "task-1", "displayName": "Avery"},
+                    "payload": {"taskId": "task-1", "displayName": " Avery "},
                 }
             )
 
@@ -214,6 +214,78 @@ def test_set_editing_broadcasts_presence_and_disconnect_clears_it(client):
             "type": "presence",
             "payload": {"editing": {}},
         }
+
+    with Session() as session:
+        suggestion = session.get(DisplayNameSuggestion, "avery")
+        assert suggestion is not None
+        assert suggestion.display_name == "Avery"
+
+
+def test_set_editing_only_persists_valid_task_scoped_display_name_suggestions(client):
+    test_client, Session = client
+
+    with Session() as session:
+        add_project(session, "project-1")
+        add_task(session, "task-1", project_id="project-1")
+
+    with test_client.websocket_connect("/ws") as editor:
+        editor.receive_json()
+
+        editor.send_json(
+            {
+                "type": "set_editing",
+                "requestId": "req-valid-editing",
+                "payload": {"taskId": "task-1", "displayName": "Taylor"},
+            }
+        )
+        assert editor.receive_json() == {
+            "type": "presence",
+            "payload": {"editing": {"task-1": "Taylor"}},
+        }
+
+        editor.send_json(
+            {
+                "type": "set_editing",
+                "requestId": "req-clear-editing",
+                "payload": {"taskId": None, "displayName": "Taylor"},
+            }
+        )
+        assert editor.receive_json() == {
+            "type": "presence",
+            "payload": {"editing": {}},
+        }
+
+        editor.send_json(
+            {
+                "type": "set_editing",
+                "requestId": "req-blank-editing",
+                "payload": {"taskId": "task-1", "displayName": "   "},
+            }
+        )
+
+        editor.send_json(
+            {
+                "type": "set_editing",
+                "requestId": "req-long-editing",
+                "payload": {"taskId": "task-1", "displayName": "x" * 51},
+            }
+        )
+
+    with Session() as session:
+        suggestions = list(
+            session.scalars(
+                select(DisplayNameSuggestion).order_by(DisplayNameSuggestion.last_used_at.desc())
+            )
+        )
+        assert [suggestion.display_name for suggestion in suggestions] == ["Taylor"]
+
+    with test_client.websocket_connect("/ws") as refreshed_client:
+        snapshot = refreshed_client.receive_json()
+
+    assert snapshot["type"] == "snapshot"
+    assert snapshot["payload"]["displayNameSuggestions"] == ["Taylor"]
+    assert snapshot["payload"]["board"]["projects"][0]["id"] == "project-1"
+    assert snapshot["payload"]["board"]["tasks"][0]["id"] == "task-1"
 
 
 def test_set_editing_without_request_id_is_ignored(client):

@@ -9,13 +9,14 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Project, Task, TaskStatus
+from .models import DisplayNameSuggestion, Project, Task, TaskStatus
 
 PROJECT_NAME_MAX_LENGTH = 50
 TASK_TITLE_MAX_LENGTH = 100
 ASSIGNEE_MAX_LENGTH = 50
 NOTES_MAX_LENGTH = 2000
 UNDO_DELETE_TTL_SECONDS = 6
+DISPLAY_NAME_SUGGESTION_LIMIT = 20
 
 
 class BoardValidationError(Exception):
@@ -60,6 +61,16 @@ def _serialize_task(task: Task) -> dict[str, Any]:
         "position": task.position,
         "created_at": _serialize_datetime(task.created_at),
     }
+
+
+def clean_display_name(value: Any) -> str:
+    return _require_text(
+        value,
+        label="assignee",
+        invalid_code="invalid_assignee",
+        too_long_code="assignee_too_long",
+        max_length=ASSIGNEE_MAX_LENGTH,
+    )
 
 
 def _run_in_transaction(session: Session, operation: Callable[[], Any]) -> Any:
@@ -151,6 +162,65 @@ def get_board_snapshot(session: Session) -> dict[str, list[dict[str, Any]]]:
         "projects": [_serialize_project(project) for project in projects],
         "tasks": [_serialize_task(task) for task in tasks],
     }
+
+
+def get_display_name_suggestions(session: Session) -> list[str]:
+    suggestions = list(
+        session.scalars(
+            select(DisplayNameSuggestion)
+            .order_by(
+                DisplayNameSuggestion.last_used_at.desc(),
+                DisplayNameSuggestion.normalized_name.asc(),
+            )
+            .limit(DISPLAY_NAME_SUGGESTION_LIMIT)
+        )
+    )
+    return [suggestion.display_name for suggestion in suggestions]
+
+
+def get_snapshot_payload(session: Session) -> dict[str, Any]:
+    return {
+        "board": get_board_snapshot(session),
+        "displayNameSuggestions": get_display_name_suggestions(session),
+    }
+
+
+def record_display_name_suggestion(session: Session, display_name: str) -> str:
+    def operation() -> str:
+        clean_name = clean_display_name(display_name)
+        normalized_name = clean_name.lower()
+        last_used_at = _utc_now()
+        suggestion = session.get(DisplayNameSuggestion, normalized_name)
+        if suggestion is None:
+            suggestion = DisplayNameSuggestion(
+                normalized_name=normalized_name,
+                display_name=clean_name,
+                last_used_at=last_used_at,
+            )
+            session.add(suggestion)
+        else:
+            suggestion.display_name = clean_name
+            suggestion.last_used_at = last_used_at
+
+        session.flush()
+
+        stale_suggestions = list(
+            session.scalars(
+                select(DisplayNameSuggestion)
+                .order_by(
+                    DisplayNameSuggestion.last_used_at.desc(),
+                    DisplayNameSuggestion.normalized_name.asc(),
+                )
+                .offset(DISPLAY_NAME_SUGGESTION_LIMIT)
+            )
+        )
+        for stale_suggestion in stale_suggestions:
+            session.delete(stale_suggestion)
+
+        session.flush()
+        return clean_name
+
+    return _run_in_transaction(session, operation)
 
 
 def create_project(session: Session, name: str) -> dict[str, Any]:

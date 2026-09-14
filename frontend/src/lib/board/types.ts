@@ -67,6 +67,7 @@ export interface BoardService {
   subscribe(listener: (event: BoardEvent) => void): () => void;
   getState(): BoardState;
   getStatus(): ConnectionStatus;
+  getDisplayNameSuggestions(): string[];
 
   createProject(name: string): Promise<Project>;
   renameProject(id: string, name: string): Promise<Project>;

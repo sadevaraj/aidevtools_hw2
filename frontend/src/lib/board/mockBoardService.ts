@@ -22,6 +22,7 @@ export interface MockOptions {
   /** Persist to localStorage + sync across tabs. */
   persist?: boolean;
   seed?: BoardState;
+  displayNameSuggestions?: string[];
 }
 
 const uid = () =>
@@ -49,6 +50,7 @@ export class MockBoardService implements BoardService {
   private status: ConnectionStatus = "connected";
   private listeners = new Set<(event: BoardEvent) => void>();
   private editing: Record<string, string> = {};
+  private displayNameSuggestions: string[];
   private trash = new Map<string, { project: Project; tasks: Task[] }>();
   private latency: number;
   private persist: boolean;
@@ -58,6 +60,7 @@ export class MockBoardService implements BoardService {
     this.latency = options.latency ?? 120;
     this.persist = options.persist ?? false;
     this.state = options.seed ?? this.load() ?? emptyState();
+    this.displayNameSuggestions = [...(options.displayNameSuggestions ?? [])];
 
     if (this.persist && typeof BroadcastChannel !== "undefined") {
       this.channel = new BroadcastChannel(CHANNEL);
@@ -88,6 +91,10 @@ export class MockBoardService implements BoardService {
     return this.status;
   }
 
+  getDisplayNameSuggestions(): string[] {
+    return [...this.displayNameSuggestions];
+  }
+
   /** Test/dev helper — simulate the socket dropping. */
   setStatus(status: ConnectionStatus) {
     this.status = status;
@@ -103,6 +110,7 @@ export class MockBoardService implements BoardService {
       if (name === displayName) delete this.editing[id];
     }
     if (taskId) this.editing[taskId] = displayName;
+    if (taskId) this.recordDisplayNameSuggestion(displayName);
     this.emit({ type: "presence", editing: { ...this.editing } });
   }
 
@@ -292,5 +300,20 @@ export class MockBoardService implements BoardService {
     const task = this.state.tasks.find((t) => t.id === id);
     if (!task) throw new ValidationError("Invalid task");
     return task;
+  }
+
+  private recordDisplayNameSuggestion(displayName: string) {
+    let clean: string;
+    try {
+      clean = requireText(displayName, "assignee", LIMITS.assignee);
+    } catch {
+      return;
+    }
+
+    const normalized = clean.toLowerCase();
+    this.displayNameSuggestions = this.displayNameSuggestions
+      .filter((name) => name.trim().toLowerCase() !== normalized)
+      .slice(0, 19);
+    this.displayNameSuggestions.unshift(clean);
   }
 }
