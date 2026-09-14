@@ -1,128 +1,834 @@
 openapi: 3.0.3
 info:
-  title: Simple Board API
-  description: API specification for Simple Board real-time Kanban application
+  title: Project Board WebSocket Protocol
   version: 1.0.0
+  description: |
+    WebSocket-only protocol contract for the authoritative project board.
+
+    The server is the source of truth. Clients send mutation commands over one
+    WebSocket connection and only apply board changes after receiving either an
+    authoritative `command_ok` reply or a broadcast `board_event` / `snapshot`
+    from the server.
+
+# WebSocket Protocol
+#
+# Transport
+# - The only board transport is GET /ws upgraded to a WebSocket.
+# - Every WebSocket frame is a JSON object with top-level `type` and `payload`.
+# - Every client mutation command also includes a client-generated `requestId`.
+# - `command_ok` and `command_error` echo the same `requestId`.
+# - `snapshot`, `board_event`, and `presence` do not require `requestId`.
+#
+# Request correlation, retry, and idempotency
+# - `requestId` must be unique per logical mutation attempt.
+# - If a client retries after a timeout or reconnect, it reuses the same
+#   `requestId` exactly once.
+# - The server treats duplicate `requestId` values for the same logical command
+#   as idempotent and must not apply the mutation twice.
+#
+# Reconnect and state replacement
+# - On initial connect and after reconnect, the server sends a full `snapshot`.
+# - The client replaces its entire local board state from the snapshot and does
+#   not merge in unconfirmed local edits.
+# - If the socket closes before a pending command receives `command_ok` or
+#   `command_error`, the client reconnects and retries that command at most once
+#   with the same `requestId`.
+# - If the retry also fails or times out, the client surfaces
+#   `Could not save changes` and restores the last confirmed board state.
+#
+# Conflict resolution
+# - The server applies valid commands in arrival order.
+# - Last write wins for overlapping updates to the same fields.
+# - Omitted fields in `update_task.payload.patch` remain unchanged.
+# - Presence is informational only and never blocks board mutations.
+#
+# Presence
+# - `presence.payload` is `{ editing: Record<string, string> }`, mapping taskId
+#   to the display name currently editing that task.
+# - Presence is never persisted.
+# - A connection clears its presence by sending `set_editing` with
+#   `taskId: null` or by disconnecting.
 paths:
-  /api/projects:
-    get:
-      summary: List all projects
-      responses:
-        '200':
-          description: List of projects
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Project'
-    post:
-      summary: Create a new project
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateProjectRequest'
-      responses:
-        '201':
-          description: Project created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Project'
-  /api/tasks:
-    get:
-      summary: List all tasks
-      responses:
-        '200':
-          description: List of tasks
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Task'
-    post:
-      summary: Create a new task
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateTaskRequest'
-      responses:
-        '201':
-          description: Task created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Task'
   /ws:
     get:
-      summary: WebSocket endpoint for real-time collaboration
+      summary: Upgrade the board connection to a WebSocket
+      description: |
+        The only transport endpoint for the board. Clients connect with HTTP GET
+        and the server upgrades the connection to a WebSocket (101 Switching
+        Protocols). After the upgrade, all communication uses the JSON message
+        envelopes defined in `components.schemas`.
       responses:
         '101':
-          description: Switching Protocols to WebSocket
+          description: Switching Protocols to the Project Board WebSocket.
+          headers:
+            Upgrade:
+              schema:
+                type: string
+              description: WebSocket upgrade confirmation.
+            Connection:
+              schema:
+                type: string
+              description: Connection upgrade confirmation.
+            Sec-WebSocket-Accept:
+              schema:
+                type: string
+              description: Standard WebSocket handshake response header.
+x-websocket-protocol:
+  envelope:
+    everyFrame:
+      required:
+        - type
+        - payload
+    clientMutationCommands:
+      required:
+        - type
+        - payload
+        - requestId
+    correlatedReplies:
+      requestIdEchoedBy:
+        - command_ok
+        - command_error
+    serverPushMessagesWithoutRequestId:
+      - snapshot
+      - board_event
+      - presence
+  retryAndReconnect:
+    requestIdRule: Client-generated and unique per logical mutation.
+    retryRule: Single retry reuses the same requestId.
+    idempotencyRule: Duplicate requestId values are idempotent and must not apply the mutation twice.
+    reconnectRule: Pending commands without a reply are retried once after reconnect, then fail with `Could not save changes` and the client restores its last confirmed board state.
+    snapshotRule: Initial connect and reconnect both send a full snapshot that replaces the client's local board state.
+  commandOkByCommand:
+    create_project: project
+    rename_project: project
+    delete_project: empty_object
+    undo_delete_project: empty_object
+    set_project_hidden: project
+    reorder_projects: empty_object
+    create_task: task
+    update_task: task
+    delete_task: empty_object
+    move_task: task
+    set_editing: no_command_ok_presence_updates_only
+  errorSemantics:
+    recipient: Sent only to the requester.
+    shape: '{ code, message }'
+    minimumCodes:
+      - invalid_project_name
+      - project_name_too_long
+      - invalid_task_title
+      - task_title_too_long
+      - invalid_assignee
+      - assignee_too_long
+      - notes_too_long
+      - invalid_project_id
+      - invalid_task_id
+      - invalid_status
+      - nothing_to_undo
+    requiredMessage:
+      nothing_to_undo: Nothing to undo
 components:
   schemas:
+    Status:
+      type: string
+      description: Authoritative task status.
+      enum:
+        - todo
+        - doing
+        - done
     Project:
       type: object
+      additionalProperties: false
       required:
         - id
         - name
+        - position
+        - hidden
+        - created_at
       properties:
         id:
           type: string
         name:
           type: string
-        createdAt:
+          minLength: 1
+          maxLength: 50
+        position:
+          type: integer
+        hidden:
+          type: boolean
+        created_at:
           type: string
           format: date-time
-    CreateProjectRequest:
-      type: object
-      required:
-        - name
-      properties:
-        name:
-          type: string
     Task:
       type: object
+      additionalProperties: false
       required:
         - id
+        - project_id
         - title
+        - assignee
+        - notes
         - status
-        - projectId
+        - position
+        - created_at
       properties:
         id:
           type: string
+        project_id:
+          type: string
         title:
           type: string
-        description:
-          type: string
-        status:
-          type: string
-          enum: [todo, doing, done]
-        projectId:
-          type: string
+          minLength: 1
+          maxLength: 100
         assignee:
           type: string
-        order:
+          minLength: 1
+          maxLength: 50
+        notes:
+          type: string
+          maxLength: 2000
+        status:
+          $ref: '#/components/schemas/Status'
+        position:
           type: integer
-        createdAt:
+        created_at:
           type: string
           format: date-time
-    CreateTaskRequest:
+    Board:
       type: object
+      additionalProperties: false
       required:
-        - title
-        - projectId
+        - projects
+        - tasks
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+    EditingPresence:
+      type: object
+      additionalProperties:
+        type: string
+      description: Record<string, string> mapping taskId to display name.
+    RequestId:
+      type: string
+      description: Client-generated identifier unique per logical mutation.
+    ClientCreateProject:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - create_project
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - name
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 50
+    ClientRenameProject:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - rename_project
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+              minLength: 1
+              maxLength: 50
+    ClientDeleteProject:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - delete_project
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+          properties:
+            id:
+              type: string
+    ClientUndoDeleteProject:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - undo_delete_project
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+          properties:
+            id:
+              type: string
+    ClientSetProjectHidden:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - set_project_hidden
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - hidden
+          properties:
+            id:
+              type: string
+            hidden:
+              type: boolean
+    ClientReorderProjects:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - reorder_projects
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - orderedIds
+          properties:
+            orderedIds:
+              type: array
+              items:
+                type: string
+    ClientCreateTask:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - create_task
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - project_id
+            - title
+            - assignee
+          properties:
+            project_id:
+              type: string
+            title:
+              type: string
+              minLength: 1
+              maxLength: 100
+            assignee:
+              type: string
+              minLength: 1
+              maxLength: 50
+            notes:
+              type: string
+              maxLength: 2000
+    UpdateTaskPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Must include at least one of title, assignee, or notes; omitted fields stay unchanged.
       properties:
         title:
           type: string
-        description:
-          type: string
-        projectId:
-          type: string
+          minLength: 1
+          maxLength: 100
         assignee:
           type: string
+          minLength: 1
+          maxLength: 50
+        notes:
+          type: string
+          maxLength: 2000
+    ClientUpdateTask:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - update_task
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - patch
+          properties:
+            id:
+              type: string
+            patch:
+              $ref: '#/components/schemas/UpdateTaskPatch'
+    ClientDeleteTask:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - delete_task
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+          properties:
+            id:
+              type: string
+    ClientMoveTask:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - move_task
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - taskId
+            - project_id
+            - status
+            - index
+          properties:
+            taskId:
+              type: string
+            project_id:
+              type: string
+            status:
+              $ref: '#/components/schemas/Status'
+            index:
+              type: integer
+              minimum: 0
+              description: Zero-based insertion index in the destination column.
+    ClientSetEditing:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - set_editing
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          type: object
+          additionalProperties: false
+          required:
+            - taskId
+            - displayName
+          properties:
+            taskId:
+              type: string
+              nullable: true
+            displayName:
+              type: string
+              minLength: 1
+              maxLength: 50
+    ClientCommand:
+      description: All client-originated mutation commands.
+      oneOf:
+        - $ref: '#/components/schemas/ClientCreateProject'
+        - $ref: '#/components/schemas/ClientRenameProject'
+        - $ref: '#/components/schemas/ClientDeleteProject'
+        - $ref: '#/components/schemas/ClientUndoDeleteProject'
+        - $ref: '#/components/schemas/ClientSetProjectHidden'
+        - $ref: '#/components/schemas/ClientReorderProjects'
+        - $ref: '#/components/schemas/ClientCreateTask'
+        - $ref: '#/components/schemas/ClientUpdateTask'
+        - $ref: '#/components/schemas/ClientDeleteTask'
+        - $ref: '#/components/schemas/ClientMoveTask'
+        - $ref: '#/components/schemas/ClientSetEditing'
+    SnapshotPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - board
+      properties:
+        board:
+          $ref: '#/components/schemas/Board'
+    ServerSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - snapshot
+        payload:
+          $ref: '#/components/schemas/SnapshotPayload'
+    ProjectCreatedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - project
+      properties:
+        eventType:
+          type: string
+          enum:
+            - project_created
+        project:
+          $ref: '#/components/schemas/Project'
+    ProjectRenamedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - project
+      properties:
+        eventType:
+          type: string
+          enum:
+            - project_renamed
+        project:
+          $ref: '#/components/schemas/Project'
+    ProjectDeletedEvent:
+      type: object
+      additionalProperties: false
+      description: Authoritative deleted project. Clients also remove tasks whose `project_id` matches the deleted project id.
+      required:
+        - eventType
+        - project
+      properties:
+        eventType:
+          type: string
+          enum:
+            - project_deleted
+        project:
+          $ref: '#/components/schemas/Project'
+    ProjectRestoredEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - project
+      properties:
+        eventType:
+          type: string
+          enum:
+            - project_restored
+        project:
+          $ref: '#/components/schemas/Project'
+    ProjectHiddenSetEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - project
+      properties:
+        eventType:
+          type: string
+          enum:
+            - project_hidden_set
+        project:
+          $ref: '#/components/schemas/Project'
+    ProjectsReorderedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - orderedIds
+      properties:
+        eventType:
+          type: string
+          enum:
+            - projects_reordered
+        orderedIds:
+          type: array
+          description: Authoritative project ordering after the mutation.
+          items:
+            type: string
+    TaskCreatedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - task
+      properties:
+        eventType:
+          type: string
+          enum:
+            - task_created
+        task:
+          $ref: '#/components/schemas/Task'
+    TaskUpdatedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - task
+      properties:
+        eventType:
+          type: string
+          enum:
+            - task_updated
+        task:
+          $ref: '#/components/schemas/Task'
+    TaskDeletedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - task
+      properties:
+        eventType:
+          type: string
+          enum:
+            - task_deleted
+        task:
+          $ref: '#/components/schemas/Task'
+    TaskMovedEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - eventType
+        - task
+      properties:
+        eventType:
+          type: string
+          enum:
+            - task_moved
+        task:
+          $ref: '#/components/schemas/Task'
+    BoardEventPayload:
+      description: Authoritative server broadcast for every confirmed board mutation.
+      oneOf:
+        - $ref: '#/components/schemas/ProjectCreatedEvent'
+        - $ref: '#/components/schemas/ProjectRenamedEvent'
+        - $ref: '#/components/schemas/ProjectDeletedEvent'
+        - $ref: '#/components/schemas/ProjectRestoredEvent'
+        - $ref: '#/components/schemas/ProjectHiddenSetEvent'
+        - $ref: '#/components/schemas/ProjectsReorderedEvent'
+        - $ref: '#/components/schemas/TaskCreatedEvent'
+        - $ref: '#/components/schemas/TaskUpdatedEvent'
+        - $ref: '#/components/schemas/TaskDeletedEvent'
+        - $ref: '#/components/schemas/TaskMovedEvent'
+    ServerBoardEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - board_event
+        payload:
+          $ref: '#/components/schemas/BoardEventPayload'
+    PresencePayload:
+      type: object
+      additionalProperties: false
+      required:
+        - editing
+      properties:
+        editing:
+          $ref: '#/components/schemas/EditingPresence'
+    ServerPresence:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - presence
+        payload:
+          $ref: '#/components/schemas/PresencePayload'
+    EmptyCommandOkPayload:
+      type: object
+      additionalProperties: false
+      description: Empty object returned for delete_project, undo_delete_project, reorder_projects, and delete_task.
+    ProjectCommandOkPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - project
+      properties:
+        project:
+          $ref: '#/components/schemas/Project'
+    TaskCommandOkPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - task
+      properties:
+        task:
+          $ref: '#/components/schemas/Task'
+    CommandOkPayload:
+      description: |
+        Correlated success payload.
+        - Returns `{ project }` for create_project, rename_project, and set_project_hidden.
+        - Returns `{ task }` for create_task, update_task, and move_task.
+        - Returns `{}` for delete_project, undo_delete_project, reorder_projects, and delete_task.
+      oneOf:
+        - $ref: '#/components/schemas/ProjectCommandOkPayload'
+        - $ref: '#/components/schemas/TaskCommandOkPayload'
+        - $ref: '#/components/schemas/EmptyCommandOkPayload'
+    CommandOk:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - command_ok
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          $ref: '#/components/schemas/CommandOkPayload'
+    CommandErrorPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_project_name
+            - project_name_too_long
+            - invalid_task_title
+            - task_title_too_long
+            - invalid_assignee
+            - assignee_too_long
+            - notes_too_long
+            - invalid_project_id
+            - invalid_task_id
+            - invalid_status
+            - nothing_to_undo
+        message:
+          type: string
+          description: Human-readable error message. Expired or missing undo uses `Nothing to undo`.
+    CommandError:
+      type: object
+      additionalProperties: false
+      description: Correlated error reply sent only to the requester.
+      required:
+        - type
+        - requestId
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - command_error
+        requestId:
+          $ref: '#/components/schemas/RequestId'
+        payload:
+          $ref: '#/components/schemas/CommandErrorPayload'
+    ServerMessage:
+      description: All server-originated WebSocket frames.
+      oneOf:
+        - $ref: '#/components/schemas/ServerSnapshot'
+        - $ref: '#/components/schemas/ServerBoardEvent'
+        - $ref: '#/components/schemas/ServerPresence'
+        - $ref: '#/components/schemas/CommandOk'
+        - $ref: '#/components/schemas/CommandError'
