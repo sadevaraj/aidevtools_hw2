@@ -827,6 +827,16 @@ Stop the stack with:
 docker compose down
 ```
 
+To start only the backend or only the frontend container:
+
+```sh
+docker compose up --build -d backend
+docker compose up --build -d frontend
+```
+
+(The frontend depends on the backend to reach the WebSocket, so start the
+backend first if running the frontend alone.)
+
 Backend SQLite data is persisted in the `backend-data` Docker volume, so it
 survives a normal `docker compose down` followed by `docker compose up`.
 
@@ -845,6 +855,26 @@ environment variable `VITE_BOARD_WS_URL`.
 - Leave `VITE_BOARD_WS_URL` unset or blank to keep using the built-in mock
   board service for frontend-only development.
 
+### Running Tests in Docker
+
+Backend tests (pytest), run in a throwaway container so nothing needs to be
+installed on the host:
+
+```sh
+docker run --rm -v "$(pwd)/backend":/app -w /app python:3.12-slim \
+  sh -c "pip install -r requirements.txt && PYTHONPATH=. pytest tests -q"
+```
+
+Frontend tests (vitest via Bun), also in a throwaway container:
+
+```sh
+docker run --rm -v "$(pwd)/frontend":/app -w /app oven/bun:1 \
+  sh -c "bun install && bun run test"
+```
+
+Each command only runs its own suite — there is no single combined test
+runner across both stacks.
+
 ### Running Locally (Without Docker)
 
 You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
@@ -861,4 +891,25 @@ To connect the local frontend to the real backend, start it with:
 
 ```sh
 VITE_BOARD_WS_URL=ws://localhost:8000/ws npm run dev
+```
+
+To run the backend locally instead of (or alongside) Docker, you need Python 3.12+:
+
+```sh
+python -m pip install -r backend/requirements.txt
+python -m uvicorn app.main:app --app-dir backend
+```
+
+This starts the backend on `http://localhost:8000`. It reads `DATABASE_URL`
+when set; otherwise it uses `backend/data/board.db`.
+
+To run tests locally without Docker:
+
+```sh
+# Backend
+python -m pip install -r backend/requirements.txt
+PYTHONPATH=backend pytest backend/tests -q
+
+# Frontend
+cd frontend && npm install && npm run test
 ```
