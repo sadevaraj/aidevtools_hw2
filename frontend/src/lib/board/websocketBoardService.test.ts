@@ -358,7 +358,14 @@ describe("WebSocketBoardService", () => {
     });
     socket.emit({
       type: "board_event",
-      payload: { eventType: "task_updated", task: task({ id: todoB.id, title: "Review now" }) },
+      payload: {
+        eventType: "task_updated",
+        task: task({
+          id: todoB.id,
+          title: "Review now",
+          created_at: "2026-01-02T00:00:00Z",
+        }),
+      },
     });
     socket.emit({
       type: "board_event",
