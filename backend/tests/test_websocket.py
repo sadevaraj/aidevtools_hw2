@@ -216,6 +216,52 @@ def test_set_editing_broadcasts_presence_and_disconnect_clears_it(client):
         }
 
 
+def test_set_editing_without_request_id_is_ignored(client):
+    test_client, Session = client
+
+    with Session() as session:
+        add_project(session, "project-1")
+        add_task(session, "task-1", project_id="project-1")
+
+    with test_client.websocket_connect("/ws") as observer:
+        observer.receive_json()
+        with test_client.websocket_connect("/ws") as editor:
+            editor.receive_json()
+
+            editor.send_json(
+                {
+                    "type": "set_editing",
+                    "payload": {"taskId": "task-1", "displayName": "Avery"},
+                }
+            )
+
+            observer.send_json(
+                {
+                    "type": "create_project",
+                    "requestId": "req-after-invalid-editing",
+                    "payload": {"name": "Roadmap"},
+                }
+            )
+
+            observer_command_ok = observer.receive_json()
+            observer_board_event = observer.receive_json()
+            editor_board_event = editor.receive_json()
+
+    assert observer_command_ok["type"] == "command_ok"
+    assert observer_command_ok["requestId"] == "req-after-invalid-editing"
+    assert observer_board_event == editor_board_event == {
+        "type": "board_event",
+        "payload": {
+            "eventType": "project_created",
+            "project": observer_command_ok["payload"]["project"],
+        },
+    }
+    assert manager.presence_message() == {
+        "type": "presence",
+        "payload": {"editing": {}},
+    }
+
+
 def test_duplicate_request_id_reuses_cached_result_without_rebroadcast(client):
     test_client, Session = client
 

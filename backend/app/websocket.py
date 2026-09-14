@@ -174,6 +174,17 @@ def _command_error(request_id: str, error: BoardValidationError) -> dict[str, An
     }
 
 
+def _is_valid_set_editing_payload(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and "taskId" in payload
+        and ("displayName" in payload)
+        and (payload["taskId"] is None or isinstance(payload["taskId"], str))
+        and isinstance(payload["displayName"], str)
+        and 1 <= len(payload["displayName"]) <= 50
+    )
+
+
 def _handle_command(
     session: Session, command_type: str, payload: dict[str, Any], request_id: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -291,18 +302,19 @@ async def websocket_endpoint(
             request_id = message.get("requestId")
             payload = message.get("payload")
 
-            if command_type == "set_editing" and isinstance(payload, dict):
+            if not isinstance(command_type, str) or not isinstance(payload, dict):
+                continue
+
+            if command_type == "set_editing":
+                if not isinstance(request_id, str) or not _is_valid_set_editing_payload(payload):
+                    continue
                 if manager.set_editing(
-                    websocket, payload.get("taskId"), payload.get("displayName", "")
+                    websocket, payload["taskId"], payload["displayName"]
                 ):
                     await manager.broadcast(manager.presence_message())
                 continue
 
-            if (
-                not isinstance(command_type, str)
-                or not isinstance(request_id, str)
-                or not isinstance(payload, dict)
-            ):
+            if not isinstance(request_id, str):
                 continue
 
             cached_result = manager.get_cached_result(websocket, request_id)
