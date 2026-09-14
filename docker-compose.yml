@@ -1,11 +1,29 @@
 services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: simple-board-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+    volumes:
+      - backend-data:/app/data
+
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: simple-board-frontend
+    depends_on:
+      - backend
     ports:
       - "5173:5173"
     environment:
       - HOST=0.0.0.0
       - PORT=5173
+      - VITE_BOARD_WS_URL=ws://localhost:8000/ws
+
+volumes:
+  backend-data:
