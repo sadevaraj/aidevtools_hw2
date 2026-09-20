@@ -8,19 +8,17 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import sessionmaker
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DATABASE_PATH = BACKEND_DIR / "data" / "board.db"
-
-
 def resolve_database_url(explicit_url: str | None = None) -> str:
     if explicit_url:
         return explicit_url
 
-    database_url = os.getenv("DATABASE_URL")
+    database_url = os.getenv("SDIP_DATABASE_URL") or os.getenv("DATABASE_URL")
     if database_url:
         return database_url
 
-    DEFAULT_DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite:///{DEFAULT_DATABASE_PATH}"
+    raise RuntimeError(
+        "Database URL is not configured. Set SDIP_DATABASE_URL or DATABASE_URL."
+    )
 
 
 def _ensure_sqlite_directory(database_url: str) -> None:

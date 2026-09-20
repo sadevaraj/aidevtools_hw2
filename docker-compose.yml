@@ -1,15 +1,34 @@
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: simple-board-db
+    environment:
+      POSTGRES_DB: ${SDIP_POSTGRES_DB:-sdip}
+      POSTGRES_USER: ${SDIP_POSTGRES_USER:-sdip}
+      POSTGRES_PASSWORD: ${SDIP_POSTGRES_PASSWORD:-sdip}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./database/data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: simple-board-backend
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"
     environment:
       - PORT=8000
-    volumes:
-      - backend-data:/app/data
+      - DATABASE_URL=postgresql+psycopg://${SDIP_POSTGRES_USER:-sdip}:${SDIP_POSTGRES_PASSWORD:-sdip}@db:5432/${SDIP_POSTGRES_DB:-sdip}
 
   frontend:
     build:
@@ -24,6 +43,3 @@ services:
       - HOST=0.0.0.0
       - PORT=5173
       - VITE_BOARD_WS_URL=ws://localhost:8000/ws
-
-volumes:
-  backend-data:

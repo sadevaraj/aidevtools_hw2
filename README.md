@@ -85,11 +85,11 @@ Result:
 ---
 
 ## Phase 4
-### SQLite Persistence
+### PostgreSQL Persistence
 
 Deliverables:
 
-- SQLite database
+- PostgreSQL database
 - Persistent projects
 - Persistent tasks
 - Startup database initialization
@@ -837,14 +837,28 @@ docker compose up --build -d frontend
 (The frontend depends on the backend to reach the WebSocket, so start the
 backend first if running the frontend alone.)
 
-Backend SQLite data is persisted in the `backend-data` Docker volume, so it
-survives a normal `docker compose down` followed by `docker compose up`.
+PostgreSQL data is persisted in the project-local `database/data/` directory,
+which is mounted into the PostgreSQL container. It survives a normal
+`docker compose down` followed by `docker compose up`.
 
-To intentionally clear the persisted backend data, remove the volume:
+To intentionally clear the persisted database data, remove the directory:
 
 ```sh
-docker compose down -v
+docker compose down
+rm -rf database/*
 ```
+
+For host-based backend development, start PostgreSQL and run the backend with:
+
+```sh
+export SDIP_DATABASE_URL=postgresql+psycopg://sdip:sdip@localhost:5432/sdip
+make run
+```
+
+The `export` command sets a shell environment variable; it does not read an
+`.env` file. `make run` starts only the PostgreSQL Compose service and runs
+FastAPI on the host, so `localhost` is correct. Use `make compose-up` to run
+the complete frontend, backend, and database stack in Docker.
 
 The frontend selects its board service using the client-exposed Vite
 environment variable `VITE_BOARD_WS_URL`.
@@ -854,6 +868,68 @@ environment variable `VITE_BOARD_WS_URL`.
   example `ws://localhost:8000/ws`, to use the real WebSocket-backed service.
 - Leave `VITE_BOARD_WS_URL` unset or blank to keep using the built-in mock
   board service for frontend-only development.
+
+### Deploying to Render
+
+Deploy the application as three Render resources:
+
+1. **Render Postgres** for persistent application data.
+2. **Backend Web Service** for FastAPI and the WebSocket endpoint.
+3. **Frontend Static Site** for the Vite production build.
+
+#### 1. Create the Render Postgres database
+
+Create a PostgreSQL database in the same Render region as the backend. In the
+backend Web Service, add the database's **Internal Database URL** as:
+
+```text
+DATABASE_URL=<Render internal database URL>
+```
+
+The backend also accepts `SDIP_DATABASE_URL`, but `DATABASE_URL` is the
+standard Render connection-variable name. Do not use `localhost` for this
+connection, and do not commit the URL or its password to the repository.
+
+#### 2. Create the backend Web Service
+
+Create a Web Service from this repository with:
+
+```text
+Root Directory: backend
+Runtime: Python
+Build Command: pip install -r requirements.txt
+Start Command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+Health Check Path: /health
+```
+
+Render supplies `PORT` automatically. Add the Postgres **Internal Database
+URL** as `DATABASE_URL`. Render Web Services support WebSockets, so the
+backend's `/ws` endpoint can be used by the frontend.
+
+#### 3. Create the frontend Static Site
+
+Create a Static Site from the same repository with:
+
+```text
+Root Directory: frontend
+Build Command: npm install && npm run build
+Publish Directory: dist
+```
+
+Set this build-time environment variable on the Static Site:
+
+```text
+VITE_BOARD_WS_URL=wss://<backend-service-name>.onrender.com/ws
+```
+
+Use `wss://` for the public HTTPS deployment. The local
+`ws://localhost:8000/ws` value is only for local development and must not be
+used in the deployed frontend. Because Vite embeds `VITE_` variables during
+the build, redeploy the Static Site after changing this value.
+
+The local `database/data/` directory and Docker bind mount are only for local
+Compose development. Render persistence comes from the managed Render
+Postgres database instead.
 
 ### Running Tests in Docker
 
@@ -900,8 +976,9 @@ python -m pip install -r backend/requirements.txt
 python -m uvicorn app.main:app --app-dir backend
 ```
 
-This starts the backend on `http://localhost:8000`. It reads `DATABASE_URL`
-when set; otherwise it uses `backend/data/board.db`.
+This starts the backend on `http://localhost:8000`. Set
+`SDIP_DATABASE_URL` (or `DATABASE_URL`) to a PostgreSQL connection URL before
+starting it.
 
 To run tests locally without Docker:
 
@@ -909,6 +986,10 @@ To run tests locally without Docker:
 # Backend
 python -m pip install -r backend/requirements.txt
 PYTHONPATH=backend pytest backend/tests -q
+
+# PostgreSQL integration test (requires a reachable PostgreSQL database)
+SDIP_DATABASE_URL=postgresql+psycopg://sdip:sdip@localhost:5432/sdip \
+  PYTHONPATH=backend pytest integration_tests -q
 
 # Frontend
 cd frontend && npm install && npm run test
