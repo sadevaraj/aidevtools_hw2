@@ -34,12 +34,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Vite inlines VITE_* variables at build time, so this must be a build
+        # arg. A runtime environment variable would be ignored.
+        VITE_BOARD_WS_URL: ${VITE_BOARD_WS_URL:-ws://localhost:8000/ws}
     container_name: simple-board-frontend
     depends_on:
       - backend
     ports:
-      - "5173:5173"
+      - "5173:3000"
     environment:
       - HOST=0.0.0.0
-      - PORT=5173
-      - VITE_BOARD_WS_URL=ws://localhost:8000/ws
+      - PORT=3000

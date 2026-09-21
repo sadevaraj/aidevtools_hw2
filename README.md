@@ -868,6 +868,15 @@ environment variable `VITE_BOARD_WS_URL`.
   example `ws://localhost:8000/ws`, to use the real WebSocket-backed service.
 - Leave `VITE_BOARD_WS_URL` unset or blank to keep using the built-in mock
   board service for frontend-only development.
+- Vite inlines `VITE_*` variables into the bundle **when the bundle is
+  built**, so this must be set at build time. Setting it only as a runtime
+  environment variable has no effect. When the frontend is containerised it
+  is passed as a Docker build argument, which is what `docker-compose.yml`
+  does.
+- The value must be a complete, valid WebSocket URL. A wrong-but-present URL
+  still selects the real board service, so the app connects to nothing and
+  sits in a reconnecting state instead of falling back to the mock. Note that
+  hostnames use hyphens, not underscores.
 
 ### Deploying to Render
 
@@ -875,7 +884,7 @@ Deploy the application as three Render resources:
 
 1. **Render Postgres** for persistent application data.
 2. **Backend Web Service** for FastAPI and the WebSocket endpoint.
-3. **Frontend Static Site** for the Vite production build.
+3. **Frontend Web Service** for the TanStack Start server build.
 
 #### 1. Create the Render Postgres database
 
@@ -906,30 +915,99 @@ Render supplies `PORT` automatically. Add the Postgres **Internal Database
 URL** as `DATABASE_URL`. Render Web Services support WebSockets, so the
 backend's `/ws` endpoint can be used by the frontend.
 
-#### 3. Create the frontend Static Site
+#### 3. Create the frontend Web Service
 
-Create a Static Site from the same repository with:
+The frontend is a TanStack Start application. Its build produces a Nitro
+server bundle in `.output/`, not a directory of purely static files, so it is
+deployed as a Web Service rather than as a Static Site. Create a Web Service
+from this repository using the Node runtime with:
 
 ```text
 Root Directory: frontend
 Build Command: npm install && npm run build
-Publish Directory: dist
+Start Command: node .output/server/index.mjs
 ```
 
-Set this build-time environment variable on the Static Site:
+There is no `dist` directory to publish, and `.output/public` alone would
+drop server-side rendering.
+
+Set both of these environment variables on the service:
 
 ```text
 VITE_BOARD_WS_URL=wss://<backend-service-name>.onrender.com/ws
+NITRO_PRESET=render-com
 ```
 
-Use `wss://` for the public HTTPS deployment. The local
-`ws://localhost:8000/ws` value is only for local development and must not be
-used in the deployed frontend. Because Vite embeds `VITE_` variables during
-the build, redeploy the Static Site after changing this value.
+`VITE_BOARD_WS_URL` points the frontend at the backend. Use `wss://` for the
+public HTTPS deployment; the local `ws://localhost:8000/ws` value is only for
+local development and must not be used in the deployed frontend.
+
+`NITRO_PRESET` selects the build target. Nitro defaults to a Cloudflare
+target, which does not produce the plain Node server that the start command
+above runs, so this must be set explicitly on the Node runtime. A correct
+build reports `"preset": "render-com"` and `"serverEntry": "server/index.mjs"`
+in `.output/nitro.json`.
+
+Both variables are read while the build command runs, so on this runtime
+setting them in the service's environment is enough. `VITE_BOARD_WS_URL` in
+particular is inlined into the client bundle by Vite at build time: a bundle
+built without it silently falls back to the in-browser mock board service,
+never contacts the backend, and gives every browser its own private board.
+Because the value is baked in, redeploy after changing it, and use **Clear
+build cache & deploy** so a cached bundle is not reused.
+
+To confirm a deployed frontend really talks to the backend, open it and check
+that the browser establishes a WebSocket to `/ws` on the backend host and
+that the backend logs the connection. Backend logs showing only `/health`
+requests mean nothing is connecting. Check the hostname carefully: it uses
+hyphens rather than underscores, and an unresolvable host leaves the board
+retrying its connection instead of reporting a clear error.
+
+Deploying the frontend with Docker instead is supported by
+`frontend/Dockerfile`, which performs the same build and sets `NITRO_PRESET`
+itself. On the Docker runtime the build has no access to service environment
+variables, so the Dockerfile declares `ARG VITE_BOARD_WS_URL` to receive the
+value as a build argument. This is also how `docker-compose.yml` passes it
+locally.
 
 The local `database/data/` directory and Docker bind mount are only for local
 Compose development. Render persistence comes from the managed Render
 Postgres database instead.
+
+### Continuous Integration and Deployment
+
+`.github/workflows/ci-cd.yml` runs on every push and pull request against
+`main`:
+
+1. **Frontend tests** (Bun + vitest) and **backend tests** (pytest) run in
+   parallel.
+2. **Backend integration tests** run next, against a `postgres:16-alpine`
+   service container, and only if both test jobs passed.
+3. **Deploy to Render** runs last, only for pushes to `main` and only if the
+   integration tests passed. It redeploys both the backend and the frontend.
+
+Render does not support GitHub OIDC or workload identity federation, so the
+deploy step cannot exchange an OIDC token for Render credentials. Instead it
+uses a service-scoped **Deploy Hook**, which avoids creating a user or an
+account-wide API key: the hook belongs to the service, can only trigger a
+deploy, and can be regenerated to revoke it.
+
+To enable deployment, copy each service's deploy hook from **Settings →
+Deploy Hook** in the Render dashboard and add them to GitHub as repository
+secrets (under **Settings → Secrets and variables → Actions**):
+
+| Secret | Render service |
+| ------ | -------------- |
+| `RENDER_DEPLOY_HOOK_URL` | backend Web Service |
+| `RENDER_FRONTEND_DEPLOY_HOOK_URL` | frontend service |
+
+A deploy hook URL is a credential, so treat it like a password and never
+commit it. Turn off Render's own auto-deploy so the pipeline is the only
+thing that ships, otherwise Render deploys on push before the tests have
+run.
+
+The deploy job targets a `production` environment, so GitHub environment
+protection rules such as required reviewers can gate it if desired.
 
 ### Running Tests in Docker
 
