@@ -16,12 +16,12 @@ concurrency:
 jobs:
   frontend-tests:
     name: Frontend tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -35,14 +35,14 @@ jobs:
 
   backend-tests:
     name: Backend tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -58,7 +58,7 @@ jobs:
 
   integration-tests:
     name: Backend integration tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [frontend-tests, backend-tests]
     services:
       postgres:
@@ -75,9 +75,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -94,7 +94,7 @@ jobs:
 
   deploy:
     name: Deploy to Render
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: integration-tests
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
